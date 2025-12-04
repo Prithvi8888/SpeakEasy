@@ -1,6 +1,8 @@
 import { useState, useRef, useEffect } from 'react';
-import { Video, VideoOff, Mic, MicOff, Play, Square } from 'lucide-react';
+import { Video, VideoOff, Mic, MicOff, Play, Square, AlertCircle } from 'lucide-react';
 import AnalysisPanel from '../components/AnalysisPanel';
+import { AudioAnalyzer } from '../services/audioAnalysis';
+import { FacialAnalyzer } from '../services/faceAnalysis';
 
 type RecordingState = 'idle' | 'recording' | 'paused';
 
@@ -16,11 +18,15 @@ export default function PracticePage() {
     clarity: 0,
     emotionalTone: 'Neutral' as string,
   });
+  const [faceDetected, setFaceDetected] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const intervalRef = useRef<number | null>(null);
   const analysisIntervalRef = useRef<number | null>(null);
+  const audioAnalyzerRef = useRef<AudioAnalyzer | null>(null);
+  const facialAnalyzerRef = useRef<FacialAnalyzer | null>(null);
 
   useEffect(() => {
     initializeMedia();
@@ -30,6 +36,8 @@ export default function PracticePage() {
       }
       if (intervalRef.current) clearInterval(intervalRef.current);
       if (analysisIntervalRef.current) clearInterval(analysisIntervalRef.current);
+      audioAnalyzerRef.current?.destroy();
+      facialAnalyzerRef.current?.destroy();
     };
   }, []);
 
@@ -42,6 +50,14 @@ export default function PracticePage() {
       streamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
+      }
+
+      audioAnalyzerRef.current = new AudioAnalyzer();
+      await audioAnalyzerRef.current.initialize(stream);
+
+      if (canvasRef.current) {
+        facialAnalyzerRef.current = new FacialAnalyzer();
+        await facialAnalyzerRef.current.initialize(canvasRef.current);
       }
     } catch (error) {
       console.error('Error accessing media devices:', error);
@@ -76,12 +92,43 @@ export default function PracticePage() {
   };
 
   const updateAnalysis = () => {
+    let audioMetrics = {
+      clarity: 0,
+      fillerWords: 0,
+      wordsPerMinute: 0,
+    };
+
+    let facialMetrics = {
+      confidenceScore: 0,
+      emotionalTone: 'Neutral',
+      faceVisible: false,
+    };
+
+    if (audioAnalyzerRef.current) {
+      const audio = audioAnalyzerRef.current.analyze(audioEnabled);
+      audioMetrics = {
+        clarity: audio.clarity,
+        fillerWords: audio.fillerWords,
+        wordsPerMinute: audio.wordsPerMinute,
+      };
+    }
+
+    if (facialAnalyzerRef.current && videoRef.current) {
+      const facial = facialAnalyzerRef.current.analyze(videoRef.current, videoEnabled);
+      facialMetrics = {
+        confidenceScore: facial.confidence,
+        emotionalTone: facial.emotionalTone,
+        faceVisible: facial.faceVisible,
+      };
+      setFaceDetected(facial.faceVisible);
+    }
+
     setAnalysisData({
-      fillerWords: Math.floor(Math.random() * 5),
-      wordsPerMinute: Math.floor(120 + Math.random() * 60),
-      confidenceScore: Math.floor(70 + Math.random() * 30),
-      clarity: Math.floor(75 + Math.random() * 25),
-      emotionalTone: ['Confident', 'Neutral', 'Engaged', 'Energetic'][Math.floor(Math.random() * 4)],
+      fillerWords: audioMetrics.fillerWords,
+      wordsPerMinute: audioMetrics.wordsPerMinute,
+      confidenceScore: facialMetrics.confidenceScore,
+      clarity: audioMetrics.clarity,
+      emotionalTone: facialMetrics.emotionalTone,
     });
   };
 
@@ -113,8 +160,29 @@ export default function PracticePage() {
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <canvas ref={canvasRef} className="hidden" />
       <div className="grid lg:grid-cols-3 gap-8">
         <div className="lg:col-span-2 space-y-6">
+          {recordingState === 'recording' && !videoEnabled && (
+            <div className="bg-orange-50 border border-orange-200 rounded-xl p-4 flex items-start space-x-3">
+              <AlertCircle className="w-5 h-5 text-orange-600 flex-shrink-0 mt-0.5" />
+              <div>
+                <h3 className="font-semibold text-orange-900 text-sm">Camera Disabled</h3>
+                <p className="text-orange-800 text-sm">Confidence and facial analysis require camera to be enabled.</p>
+              </div>
+            </div>
+          )}
+
+          {recordingState === 'recording' && !audioEnabled && (
+            <div className="bg-orange-50 border border-orange-200 rounded-xl p-4 flex items-start space-x-3">
+              <AlertCircle className="w-5 h-5 text-orange-600 flex-shrink-0 mt-0.5" />
+              <div>
+                <h3 className="font-semibold text-orange-900 text-sm">Microphone Disabled</h3>
+                <p className="text-orange-800 text-sm">Clarity and audio analysis require microphone to be enabled.</p>
+              </div>
+            </div>
+          )}
+
           <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
             <div className="relative bg-slate-900 aspect-video">
               <video

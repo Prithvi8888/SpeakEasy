@@ -121,21 +121,39 @@ export default function AnalysisPanel({ data, isRecording }: AnalysisPanelProps)
       </div>
 
       {isRecording && (
-        <div className="bg-gradient-to-br from-green-50 to-emerald-50 rounded-xl p-4 border border-green-200">
-          <div className="flex items-start space-x-3">
-            <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${getScoreBgColor(data.confidenceScore)}`}>
-              <Activity className={`w-4 h-4 ${getScoreColor(data.confidenceScore)}`} />
-            </div>
-            <div>
-              <h4 className="font-semibold text-slate-900 text-sm mb-1">Live Feedback</h4>
-              <p className="text-sm text-slate-600">
-                {data.confidenceScore >= 80
-                  ? 'Great job! Your delivery is confident and clear.'
-                  : data.confidenceScore >= 60
-                  ? 'Good progress. Try to speak with more conviction.'
-                  : 'Focus on maintaining eye contact and speaking clearly.'}
-              </p>
-            </div>
+        <div className={`rounded-xl p-4 border flex items-start space-x-3 ${
+          data.confidenceScore === 0
+            ? 'bg-slate-50 border-slate-200'
+            : data.confidenceScore >= 80
+            ? 'bg-green-50 border-green-200'
+            : data.confidenceScore >= 60
+            ? 'bg-yellow-50 border-yellow-200'
+            : 'bg-orange-50 border-orange-200'
+        }`}>
+          <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${
+            data.confidenceScore === 0
+              ? 'bg-slate-100'
+              : getScoreBgColor(data.confidenceScore)
+          }`}>
+            <Activity className={`w-4 h-4 ${
+              data.confidenceScore === 0
+                ? 'text-slate-400'
+                : getScoreColor(data.confidenceScore)
+            }`} />
+          </div>
+          <div>
+            <h4 className="font-semibold text-slate-900 text-sm mb-1">Live Feedback</h4>
+            <p className="text-sm text-slate-600">
+              {data.confidenceScore === 0
+                ? 'Enable camera and microphone to start analysis.'
+                : data.confidenceScore >= 80
+                ? 'Great job! Your delivery is confident and clear.'
+                : data.confidenceScore >= 60
+                ? 'Good progress. Try to speak with more conviction.'
+                : data.clarity === 0
+                ? 'Enable microphone to analyze your voice clarity.'
+                : 'Focus on maintaining eye contact and speaking clearly.'}
+            </p>
           </div>
         </div>
       )}
