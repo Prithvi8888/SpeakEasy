@@ -10,7 +10,9 @@ export class FacialAnalyzer {
   private canvasRef: HTMLCanvasElement | null = null;
   private previousFrameData: ImageData | null = null;
   private faceDetectionHistory: boolean[] = [];
-  private volumeHistory: number[] = [];
+  private confidenceHistory: number[] = [];
+  private headPositionHistory: { x: number; y: number }[] = [];
+  private smileHistory: number[] = [];
 
   async initialize(canvas: HTMLCanvasElement): Promise<void> {
     this.canvasRef = canvas;
@@ -18,6 +20,7 @@ export class FacialAnalyzer {
 
   analyze(videoElement: HTMLVideoElement, videoEnabled: boolean): FacialMetrics {
     if (!videoEnabled || !this.canvasRef) {
+      this.resetHistory();
       return this.getDefaultMetrics();
     }
 
@@ -36,9 +39,23 @@ export class FacialAnalyzer {
       this.faceDetectionHistory.shift();
     }
 
+    if (metrics.faceVisible) {
+      this.confidenceHistory.push(metrics.confidence);
+      if (this.confidenceHistory.length > 30) {
+        this.confidenceHistory.shift();
+      }
+    }
+
     this.previousFrameData = frameData;
 
     return metrics;
+  }
+
+  private resetHistory(): void {
+    this.faceDetectionHistory = [];
+    this.confidenceHistory = [];
+    this.headPositionHistory = [];
+    this.smileHistory = [];
   }
 
   private detectFaceAndEmotions(frameData: ImageData): FacialMetrics {
@@ -46,20 +63,32 @@ export class FacialAnalyzer {
     const width = frameData.width;
     const height = frameData.height;
 
-    const centerRegion = this.analyzeRegion(data, width, height, 0.3, 0.3, 0.7, 0.7);
-    const faceDetected = centerRegion.brightness > 60 && centerRegion.variance > 500;
+    const centerRegion = this.analyzeRegion(data, width, height, 0.2, 0.15, 0.8, 0.85);
+    const hasSignificantFeatures = this.detectFacialFeatures(frameData);
 
-    if (!faceDetected) {
+    if (centerRegion.brightness < 40 || !hasSignificantFeatures) {
       return this.getDefaultMetrics();
     }
 
     const brightness = centerRegion.brightness;
-    const eyeOpenness = this.detectEyeOpenness(frameData);
-    const movementLevel = this.detectMovement(frameData);
     const symmetry = this.detectFacialSymmetry(frameData);
+    const eyeOpenness = this.detectEyeOpenness(frameData);
+    const mouthSmile = this.detectMouthSmile(frameData);
+    const headPose = this.estimateHeadPose(frameData);
+    const faceStability = this.calculateFaceStability();
+    const faceCenteredness = this.calculateCenteredness(frameData);
 
-    const confidenceScore = this.calculateConfidence(brightness, eyeOpenness, movementLevel, symmetry);
-    const emotionalTone = this.determineEmotionalTone(brightness, eyeOpenness, movementLevel);
+    const confidenceScore = this.calculateConfidence(
+      brightness,
+      eyeOpenness,
+      mouthSmile,
+      symmetry,
+      headPose,
+      faceStability,
+      faceCenteredness
+    );
+
+    const emotionalTone = this.determineEmotionalTone(brightness, eyeOpenness, mouthSmile, headPose);
 
     return {
       confidence: confidenceScore,
@@ -68,6 +97,11 @@ export class FacialAnalyzer {
       eyeOpenness,
       brightness,
     };
+  }
+
+  private detectFacialFeatures(frameData: ImageData): boolean {
+    const edges = this.detectEdges(frameData);
+    return edges > 100;
   }
 
   private analyzeRegion(
@@ -108,35 +142,54 @@ export class FacialAnalyzer {
   private detectEyeOpenness(frameData: ImageData): number {
     const data = frameData.data;
     const width = frameData.width;
+    const height = frameData.height;
 
-    const leftEye = this.analyzeRegion(data, width, frameData.height, 0.25, 0.3, 0.4, 0.45);
-    const rightEye = this.analyzeRegion(data, width, frameData.height, 0.6, 0.3, 0.75, 0.45);
+    const leftEyeRegion = this.analyzeRegion(data, width, height, 0.3, 0.35, 0.42, 0.48);
+    const rightEyeRegion = this.analyzeRegion(data, width, height, 0.58, 0.35, 0.7, 0.48);
 
-    const avgEyeBrightness = (leftEye.brightness + rightEye.brightness) / 2;
-    const eyeOpenness = Math.max(0, Math.min(100, (avgEyeBrightness / 150) * 100));
+    const leftEyeDarkness = 255 - leftEyeRegion.brightness;
+    const rightEyeDarkness = 255 - rightEyeRegion.brightness;
+    const avgEyeDarkness = (leftEyeDarkness + rightEyeDarkness) / 2;
+
+    const eyeOpenness = Math.max(0, Math.min(100, (avgEyeDarkness / 150) * 100));
 
     return Math.round(eyeOpenness);
   }
 
-  private detectMovement(frameData: ImageData): number {
-    if (!this.previousFrameData) {
-      this.previousFrameData = frameData;
-      return 50;
+  private detectMouthSmile(frameData: ImageData): number {
+    const data = frameData.data;
+    const width = frameData.width;
+    const height = frameData.height;
+
+    const mouthRegion = this.analyzeRegion(data, width, height, 0.35, 0.6, 0.65, 0.75);
+
+    const mouthDarkness = 255 - mouthRegion.brightness;
+    const smile = Math.max(0, Math.min(100, (mouthDarkness / 100) * 80));
+
+    this.smileHistory.push(smile);
+    if (this.smileHistory.length > 20) {
+      this.smileHistory.shift();
     }
 
-    const currentData = frameData.data;
-    const previousData = this.previousFrameData.data;
-    let differences = 0;
+    return Math.round(smile);
+  }
 
-    for (let i = 0; i < Math.min(currentData.length, 10000); i += 4) {
-      const currentBrightness = (currentData[i] + currentData[i + 1] + currentData[i + 2]) / 3;
-      const previousBrightness = (previousData[i] + previousData[i + 1] + previousData[i + 2]) / 3;
-      if (Math.abs(currentBrightness - previousBrightness) > 15) {
-        differences++;
-      }
-    }
+  private estimateHeadPose(frameData: ImageData): { yaw: number; pitch: number } {
+    const data = frameData.data;
+    const width = frameData.width;
+    const height = frameData.height;
 
-    return Math.round((differences / 2500) * 100);
+    const leftHalf = this.analyzeRegion(data, width, height, 0.1, 0.2, 0.4, 0.8);
+    const rightHalf = this.analyzeRegion(data, width, height, 0.6, 0.2, 0.9, 0.8);
+
+    const yawAngle = leftHalf.brightness > rightHalf.brightness ? -15 : rightHalf.brightness > leftHalf.brightness ? 15 : 0;
+
+    const topHalf = this.analyzeRegion(data, width, height, 0.2, 0.1, 0.8, 0.4);
+    const bottomHalf = this.analyzeRegion(data, width, height, 0.2, 0.5, 0.8, 0.85);
+
+    const pitchAngle = topHalf.brightness > bottomHalf.brightness ? 15 : bottomHalf.brightness > topHalf.brightness ? -15 : 0;
+
+    return { yaw: yawAngle, pitch: pitchAngle };
   }
 
   private detectFacialSymmetry(frameData: ImageData): number {
@@ -144,49 +197,127 @@ export class FacialAnalyzer {
     const width = frameData.width;
     const height = frameData.height;
 
-    const centerX = Math.floor(width / 2);
     let symmetryScore = 0;
     let sampleCount = 0;
 
-    for (let y = Math.floor(height * 0.2); y < Math.floor(height * 0.7); y += 5) {
-      for (let x = 1; x < Math.floor(width * 0.4); x += 5) {
+    for (let y = Math.floor(height * 0.2); y < Math.floor(height * 0.75); y += 4) {
+      for (let x = 10; x < Math.floor(width * 0.35); x += 5) {
         const leftIdx = (y * width + x) * 4;
         const rightIdx = (y * width + (width - x)) * 4;
 
-        const leftBrightness = (data[leftIdx] + data[leftIdx + 1] + data[leftIdx + 2]) / 3;
-        const rightBrightness = (data[rightIdx] + data[rightIdx + 1] + data[rightIdx + 2]) / 3;
+        if (leftIdx >= 0 && rightIdx < data.length) {
+          const leftBrightness = (data[leftIdx] + data[leftIdx + 1] + data[leftIdx + 2]) / 3;
+          const rightBrightness = (data[rightIdx] + data[rightIdx + 1] + data[rightIdx + 2]) / 3;
 
-        const diff = Math.abs(leftBrightness - rightBrightness);
-        symmetryScore += Math.max(0, 100 - diff);
-        sampleCount++;
+          const diff = Math.abs(leftBrightness - rightBrightness);
+          symmetryScore += Math.max(0, 100 - diff * 0.5);
+          sampleCount++;
+        }
       }
     }
 
     return sampleCount > 0 ? Math.round(symmetryScore / sampleCount) : 50;
   }
 
+  private detectEdges(frameData: ImageData): number {
+    const data = frameData.data;
+    const width = frameData.width;
+    const height = frameData.height;
+
+    let edgeCount = 0;
+    const threshold = 30;
+
+    for (let y = 1; y < height - 1; y += 2) {
+      for (let x = 1; x < width - 1; x += 2) {
+        const idx = (y * width + x) * 4;
+
+        const centerBrightness = (data[idx] + data[idx + 1] + data[idx + 2]) / 3;
+        const rightBrightness = (data[idx + 4] + data[idx + 5] + data[idx + 6]) / 3;
+        const downBrightness = (data[idx + width * 4] + data[idx + width * 4 + 1] + data[idx + width * 4 + 2]) / 3;
+
+        const edgeStrength = Math.abs(centerBrightness - rightBrightness) + Math.abs(centerBrightness - downBrightness);
+
+        if (edgeStrength > threshold) {
+          edgeCount++;
+        }
+      }
+    }
+
+    return edgeCount;
+  }
+
+  private calculateFaceStability(): number {
+    if (this.confidenceHistory.length < 3) return 50;
+
+    const recent = this.confidenceHistory.slice(-15);
+    const average = recent.reduce((a, b) => a + b, 0) / recent.length;
+
+    let variance = 0;
+    for (const conf of recent) {
+      variance += Math.pow(conf - average, 2);
+    }
+
+    const stdDev = Math.sqrt(variance / recent.length);
+    return Math.max(0, 100 - (stdDev / 30) * 100);
+  }
+
+  private calculateCenteredness(frameData: ImageData): number {
+    const data = frameData.data;
+    const width = frameData.width;
+    const height = frameData.height;
+
+    const centerRegion = this.analyzeRegion(data, width, height, 0.25, 0.25, 0.75, 0.75);
+    const peripheryAvg =
+      (this.analyzeRegion(data, width, height, 0, 0, 0.2, 1).brightness +
+        this.analyzeRegion(data, width, height, 0.8, 0, 1, 1).brightness) /
+      2;
+
+    const centeredness = centerRegion.brightness > peripheryAvg ? 100 : 50;
+    return centeredness;
+  }
+
   private calculateConfidence(
     brightness: number,
     eyeOpenness: number,
-    movement: number,
-    symmetry: number
+    smile: number,
+    symmetry: number,
+    headPose: { yaw: number; pitch: number },
+    stability: number,
+    centeredness: number
   ): number {
-    const brightnessConfidence = Math.min(100, (brightness / 200) * 100);
-    const eyeConfidence = eyeOpenness > 40 ? eyeOpenness : Math.max(20, eyeOpenness * 0.5);
-    const movementConfidence = movement > 20 && movement < 60 ? 80 : Math.max(40, 100 - Math.abs(movement - 40));
-    const symmetryConfidence = symmetry * 0.8;
+    const brightnessScore = Math.min(100, (brightness / 200) * 100);
+    const eyeScore = Math.min(100, (eyeOpenness / 80) * 100);
+    const smileScore = Math.min(100, (smile / 100) * 80);
+    const symmetryScore = symmetry * 0.8;
 
-    const overall = (brightnessConfidence + eyeConfidence + movementConfidence + symmetryConfidence) / 4;
+    const headAlignmentScore = 100 - (Math.abs(headPose.yaw) + Math.abs(headPose.pitch)) * 2;
+    const stabilityScore = stability;
+    const centerednessScore = centeredness;
+
+    const overall =
+      brightnessScore * 0.15 +
+      eyeScore * 0.25 +
+      smileScore * 0.15 +
+      symmetryScore * 0.15 +
+      headAlignmentScore * 0.15 +
+      stabilityScore * 0.1 +
+      centerednessScore * 0.05;
 
     return Math.round(Math.max(0, Math.min(100, overall)));
   }
 
-  private determineEmotionalTone(brightness: number, eyeOpenness: number, movement: number): string {
-    if (brightness < 60) return 'Nervous';
-    if (eyeOpenness < 40) return 'Uncertain';
-    if (movement > 60) return 'Energetic';
-    if (movement > 30) return 'Engaged';
-    if (brightness > 150 && eyeOpenness > 70) return 'Confident';
+  private determineEmotionalTone(
+    brightness: number,
+    eyeOpenness: number,
+    smile: number,
+    headPose: { yaw: number; pitch: number }
+  ): string {
+    if (eyeOpenness < 30) return 'Nervous';
+    if (brightness < 80) return 'Uncertain';
+    if (smile > 50 && eyeOpenness > 60) return 'Confident';
+    if (smile > 40) return 'Engaged';
+    if (Math.abs(headPose.pitch) > 10 || Math.abs(headPose.yaw) > 10) return 'Distracted';
+    if (eyeOpenness > 70 && brightness > 130) return 'Alert';
     return 'Neutral';
   }
 
@@ -202,7 +333,6 @@ export class FacialAnalyzer {
 
   destroy(): void {
     this.previousFrameData = null;
-    this.faceDetectionHistory = [];
-    this.volumeHistory = [];
+    this.resetHistory();
   }
 }
